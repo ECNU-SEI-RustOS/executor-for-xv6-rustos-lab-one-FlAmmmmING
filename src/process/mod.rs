@@ -4,6 +4,7 @@ use core::convert::TryFrom;
 use core::ptr;
 use core::mem;
 use core::sync::atomic::Ordering;
+use core::sync::atomic::AtomicBool;
 
 use crate::consts::{NPROC, PGSIZE, TRAMPOLINE, fs::ROOTDEV};
 use crate::mm::{kvm_map, PhysAddr, PteFlag, VirtAddr, RawPage, RawSinglePage, PageTable, RawQuadPage};
@@ -598,6 +599,15 @@ unsafe fn fork_ret() -> ! {
         INITIALIZED = true;
         // File system initialization
         fs::init(ROOTDEV);
+    }
+
+    static FIRST: AtomicBool = AtomicBool::new(true);
+    if FIRST.swap(false, Ordering::SeqCst) {
+        let p = CPU_MANAGER.my_proc();
+        let pd = &mut *p.data.get();
+        if let Some(pgt) = pd.pagetable.as_ref() {
+            pgt.vm_print(0);
+        }
     }
 
     user_trap_ret();

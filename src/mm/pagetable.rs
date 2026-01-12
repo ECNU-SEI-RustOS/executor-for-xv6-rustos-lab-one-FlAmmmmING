@@ -267,6 +267,36 @@ impl PageTable {
         Ok(())
     }
 
+    pub fn vm_print(&self, level: usize) {
+        // 第一层递归（根）打印标题
+        if level == 0 {
+            println!("page table {:#x}", self as *const _ as usize);
+        }
+
+        for i in 0..512 {
+            let pte = &self.data[i];
+            
+            if pte.is_valid() {
+                for _ in 0..=level {
+                    print!(".. ");
+                }
+
+                println!(
+                    "{}: pte {:#018x} pa {:#018x}", 
+                    i, 
+                    pte.data, 
+                    pte.as_phys_addr().as_usize()
+                );
+
+                if level < 2 && !pte.is_leaf() {
+                    let child_pa = pte.as_phys_addr().as_usize();
+                    let child_pgt = unsafe { &*(child_pa as *const PageTable) };
+                    child_pgt.vm_print(level + 1);
+                }
+            }
+        }
+    }
+
     /// # 功能说明
     /// 递归遍历或分配多级页表中的页表项，定位并返回虚拟地址 `va` 对应的最低级（叶子级）页表项的可变引用。  
     /// 如果中间级页表项无效，会动态分配并初始化新的页表页，保证页表路径完整。  

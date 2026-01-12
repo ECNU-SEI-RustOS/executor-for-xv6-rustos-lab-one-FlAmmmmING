@@ -39,6 +39,7 @@ pub trait Syscall {
     fn sys_link(&mut self) -> SysResult;
     fn sys_mkdir(&mut self) -> SysResult;
     fn sys_close(&mut self) -> SysResult;
+    fn sys_trace(&mut self) -> SysResult;
 }
 
 impl Syscall for Proc {
@@ -142,7 +143,6 @@ impl Syscall for Proc {
         ret.map(|()| 0)
     }
 
-    /// Load an elf binary and execuate it the currrent process context.
     fn sys_exec(&mut self) -> SysResult {
         let mut path: [u8; MAXPATH] = [0; MAXPATH];
         self.arg_str(0, &mut path).map_err(syscall_warning)?;
@@ -152,15 +152,16 @@ impl Syscall for Proc {
         let mut uarg: usize;
         let uargv = self.arg_addr(1);
         let mut argv: [Option<Box<[u8; MAXARGLEN]>>; MAXARG] = array![_ => None; MAXARG];
+        
         for i in 0..MAXARG {
-            // fetch ith arg's address into uarg
-            match self.fetch_addr(uargv+i*mem::size_of::<usize>()) {
+            match self.fetch_addr(uargv + i * mem::size_of::<usize>()) {
                 Ok(addr) => uarg = addr,
                 Err(s) => {
                     error = s;
                     break
                 },
             }
+
             if uarg == 0 {
                 match elf::load(self, &path, &argv[..i]) {
                     Ok(ret) => result = Ok(ret),
@@ -169,7 +170,6 @@ impl Syscall for Proc {
                 break       
             }
 
-            // allocate kernel space to copy in user arg
             match Box::try_new_zeroed() {
                 Ok(b) => unsafe { argv[i] = Some(b.assume_init()) },
                 Err(_) => {
@@ -178,7 +178,6 @@ impl Syscall for Proc {
                 },
             }
 
-            // copy user arg into kernel space
             if let Err(s) = self.fetch_str(uarg, argv[i].as_deref_mut().unwrap()) {
                 error = s;
                 break
@@ -191,6 +190,21 @@ impl Syscall for Proc {
         if result.is_err() {
             syscall_warning(error);
         }
+
+        if result.is_ok() {
+            let guard = self.excl.lock();
+            if guard.pid == 1 {
+                // 安全地获取进程私有数据中的页表引用并打印
+                unsafe {
+                    let data = &mut *self.data.get();
+                    if let Some(pgt) = data.pagetable.as_ref() {
+                        pgt.vm_print(0);
+                    }
+                }
+            }
+            drop(guard);
+        }
+
         result
     }
 
@@ -496,6 +510,20 @@ impl Syscall for Proc {
         println!("[{}].close(fd={}), file={:?}", self.excl.lock().pid, fd, file);
 
         drop(file);
+        Ok(0)
+    }
+
+    /// 实现 trace 系统调用：读取用户传入的掩码并存入进程数据中
+    fn sys_trace(&mut self) -> SysResult {
+        // 1. 获取系统调用的第一个参数 (mask)
+        let mask = self.arg_i32(0);
+        
+        // 2. 将 mask 存入当前进程的私有数据中
+        // 注意：此处需要使用 get() 获取指针再转为可变引用
+        let pd = unsafe { self.data.get().as_mut().unwrap() };
+        pd.trace_mask = mask;
+        
+        // 3. 按照惯例返回 0 表示成功
         Ok(0)
     }
 }

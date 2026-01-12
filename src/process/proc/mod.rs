@@ -102,6 +102,7 @@ pub struct ProcData {
     pub pagetable: Option<Box<PageTable>>,
     /// 进程当前工作目录的 inode。
     pub cwd: Option<Inode>,
+    pub trace_mask: i32, // 添加掩码字段
 }
 
 
@@ -116,6 +117,7 @@ impl ProcData {
             tf: ptr::null_mut(),
             pagetable: None,
             cwd: None,
+            trace_mask: 0, // 初始化掩码字段
         }
     }
 
@@ -495,9 +497,17 @@ impl Proc {
     pub fn syscall(&mut self) {
         sstatus::intr_on();
 
-        let tf = unsafe { self.data.get_mut().tf.as_mut().unwrap() };
-        let a7 = tf.a7;
-        tf.admit_ecall();
+        // 系统调用名称数组，用于打印
+        let syscall_names = [
+            "", "fork", "exit", "wait", "pipe", "read", "kill", "exec",
+            "fstat", "chdir", "dup", "getpid", "sbrk", "sleep", "uptime",
+            "open", "write", "mknod", "unlink", "link", "mkdir", "close", "trace",
+        ];
+        
+        let a7 = unsafe { (*self.data.get()).tf.as_ref().unwrap().a7 };
+        
+        unsafe { (*self.data.get()).tf.as_mut().unwrap().admit_ecall() };
+
         let sys_result = match a7 {
             1 => self.sys_fork(),
             2 => self.sys_exit(),
@@ -520,14 +530,26 @@ impl Proc {
             19 => self.sys_link(),
             20 => self.sys_mkdir(),
             21 => self.sys_close(),
+            22 => self.sys_trace(),
             _ => {
                 panic!("unknown syscall num: {}", a7);
             }
         };
-        tf.a0 = match sys_result {
+
+        let pd = unsafe { self.data.get_mut() };
+        let tf = unsafe { pd.tf.as_mut().unwrap() };
+        
+        let retval = match sys_result {
             Ok(ret) => ret,
             Err(()) => -1isize as usize,
         };
+        tf.a0 = retval;
+
+        // --- 核心打印逻辑 ---
+        if (pd.trace_mask >> a7) & 1 != 0 {
+            let pid = self.excl.lock().pid;
+            println!("{}: syscall {} -> {}", pid, syscall_names[a7 as usize], retval as isize);
+        }
     }
 
     /// # 功能说明
@@ -690,6 +712,8 @@ impl Proc {
         
         // copy process name
         cdata.name.copy_from_slice(&pdata.name);
+
+        cdata.trace_mask = pdata.trace_mask; // inherit trace mask
 
         let cpid = cexcl.pid;
 
